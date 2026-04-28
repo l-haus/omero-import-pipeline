@@ -206,7 +206,7 @@ stage_imports() {
   mapping_json="$(load_mapping_json)"
   validate_screen_mapping_prefixes "${BUILD_DATASET}" "${mapping_json}"
 
-  run_in_microscopy_env "generate-omero-imports \"${BUILD_DATASET}\" \"${SCREEN_MAPPING_PATH}\""
+  run_in_microscopy_env "cd \"${BUILD_DATASET}\" && generate-omero-imports \"${BUILD_DATASET}\" \"${SCREEN_MAPPING_PATH}\""
 
   check_file "${IMPORT_COMMANDS_PATH}"
   log "Import command generation complete: ${IMPORT_COMMANDS_PATH}"
