@@ -28,8 +28,6 @@ LOG_FILE="${LOG_DIR}/$(date +%Y%m%d_%H%M%S)_${STAGE}.log"
 
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
-REMOTE="${RACCOON_USER}@${RACCOON_HOST}"
-
 RAW_DATASET="${RAW_ROOT}/${DATASET}"
 BUILD_DATASET="${BUILD_ROOT}/${DATASET}"
 
@@ -50,34 +48,14 @@ die() {
   exit 1
 }
 
-run_ssh() {
-  local remote="$1"
-  local cmd="$2"
-  ssh -o BatchMode=no "${remote}" "${cmd}"
-}
-
-check_remote_dir() {
-  local remote="$1"
-  local path="$2"
-  run_ssh "${remote}" "test -d \"${path}\"" || die "Remote directory not found on ${remote}: ${path}"
-}
-
-check_remote_file() {
-  local remote="$1"
-  local path="$2"
-  run_ssh "${remote}" "test -f \"${path}\"" || die "Remote file not found on ${remote}: ${path}"
-}
-
-check_local_file() {
+check_dir() {
   local path="$1"
-  [[ -f "${path}" ]] || die "Local file not found: ${path}"
+  [[ -d "${path}" ]] || die "Directory not found: ${path}"
 }
 
-remote_activate_env() {
-  cat <<EOF
-source ~/.bashrc >/dev/null 2>&1 || true
-conda activate "${MICROSCOPY_UTILS_ENV}"
-EOF
+check_file() {
+  local path="$1"
+  [[ -f "${path}" ]] || die "File not found: ${path}"
 }
 
 load_mapping_json() {
@@ -89,14 +67,49 @@ print(json.dumps(json.loads(path.read_text())))
 PY
 }
 
+run_in_microscopy_env() {
+  local cmd="$1"
+
+  if command -v conda >/dev/null 2>&1; then
+    bash -lc "
+      set -euo pipefail
+      source ~/.bashrc >/dev/null 2>&1 || true
+      conda activate \"${MICROSCOPY_UTILS_ENV}\"
+      ${cmd}
+    "
+    return
+  fi
+
+  if [[ -f "$HOME/miniconda3/etc/profile.d/conda.sh" ]]; then
+    bash -lc "
+      set -euo pipefail
+      source \"$HOME/miniconda3/etc/profile.d/conda.sh\"
+      conda activate \"${MICROSCOPY_UTILS_ENV}\"
+      ${cmd}
+    "
+    return
+  fi
+
+  if [[ -f "$HOME/anaconda3/etc/profile.d/conda.sh" ]]; then
+    bash -lc "
+      set -euo pipefail
+      source \"$HOME/anaconda3/etc/profile.d/conda.sh\"
+      conda activate \"${MICROSCOPY_UTILS_ENV}\"
+      ${cmd}
+    "
+    return
+  fi
+
+  die "Could not find a working conda initialization path"
+}
+
 validate_screen_mapping_prefixes() {
-  local remote="$1"
-  local dataset_path="$2"
-  local mapping_json="$3"
+  local dataset_path="$1"
+  local mapping_json="$2"
 
   log "Validating plate prefixes against screen mapping"
 
-  run_ssh "${remote}" "python3 - <<'PY'
+  python3 - <<PY
 import json
 import pathlib
 import sys
@@ -119,29 +132,25 @@ if missing:
     sys.exit(1)
 
 print('Screen mapping validation passed for prefixes:', ', '.join(sorted(prefixes)) if prefixes else '(none)')
-PY" || die "Screen mapping validation failed"
+PY
 }
 
 stage_generate() {
   log "Stage: generate"
-  check_remote_dir "${REMOTE}" "${RAW_DATASET}"
+  check_dir "${RAW_DATASET}"
 
-  run_ssh "${REMOTE}" "$(cat <<EOF
-set -euo pipefail
-$(remote_activate_env)
-mkdir -p "${BUILD_DATASET}"
-generate-ome-tiffs-batch "${RAW_DATASET}" "${BUILD_DATASET}" --workers "${GENERATE_WORKERS}"
-EOF
-)"
-  check_remote_dir "${REMOTE}" "${BUILD_DATASET}"
+  mkdir -p "${BUILD_DATASET}"
+  run_in_microscopy_env "generate-ome-tiffs-batch \"${RAW_DATASET}\" \"${BUILD_DATASET}\" --workers \"${GENERATE_WORKERS}\""
+
+  check_dir "${BUILD_DATASET}"
   log "Generate stage complete"
 }
 
 stage_validate_local() {
   log "Stage: validate-local"
-  check_remote_dir "${REMOTE}" "${BUILD_DATASET}"
+  check_dir "${BUILD_DATASET}"
 
-  run_ssh "${REMOTE}" "python3 - <<'PY'
+  python3 - <<PY
 from pathlib import Path
 import sys
 
@@ -163,34 +172,27 @@ print(f'Found {len(ome_files)} OME-TIFF files in {dataset}')
 if len(ome_files) == 0:
     print(f'No OME-TIFF files found in {dataset}', file=sys.stderr)
     sys.exit(1)
-PY"
+PY
+
   log "Local validation stage complete"
 }
 
 stage_companion() {
   log "Stage: companion"
-  check_remote_dir "${REMOTE}" "${BUILD_DATASET}"
+  check_dir "${BUILD_DATASET}"
 
-  run_ssh "${REMOTE}" "$(cat <<EOF
-set -euo pipefail
-$(remote_activate_env)
-generate-companion-batch "${BUILD_DATASET}"
-EOF
-)"
+  run_in_microscopy_env "generate-companion-batch \"${BUILD_DATASET}\""
   log "Companion stage complete"
 }
 
 stage_permissions() {
   log "Stage: permissions"
-  check_remote_dir "${REMOTE}" "${BUILD_DATASET}"
+  check_dir "${BUILD_DATASET}"
 
-  run_ssh "${REMOTE}" "$(cat <<EOF
-set -euo pipefail
-sudo chown -R "${RACCOON_CHOWN_USER}:${RACCOON_CHOWN_GROUP}" "${BUILD_DATASET}"
-sudo find "${BUILD_DATASET}" -type f -exec chmod o+r {} +
-sudo find "${BUILD_DATASET}" -type d -exec chmod o+rx {} +
-EOF
-)"
+  sudo chown -R "${RACCOON_CHOWN_USER}:${RACCOON_CHOWN_GROUP}" "${BUILD_DATASET}"
+  sudo find "${BUILD_DATASET}" -type f -exec chmod o+r {} +
+  sudo find "${BUILD_DATASET}" -type d -exec chmod o+rx {} +
+
   log "Permissions stage complete"
 }
 
@@ -198,24 +200,18 @@ stage_imports() {
   local mapping_json
   log "Stage: imports"
 
-  check_local_file "${SCREEN_MAPPING_PATH}"
-  check_remote_dir "${REMOTE}" "${BUILD_DATASET}"
+  check_file "${SCREEN_MAPPING_PATH}"
+  check_dir "${BUILD_DATASET}"
 
   mapping_json="$(load_mapping_json)"
+  validate_screen_mapping_prefixes "${BUILD_DATASET}" "${mapping_json}"
 
-  validate_screen_mapping_prefixes "${REMOTE}" "${BUILD_DATASET}" "${mapping_json}"
+  run_in_microscopy_env "generate-omero-imports \"${BUILD_DATASET}\" \"${SCREEN_MAPPING_PATH}\""
 
-  run_ssh "${REMOTE}" "$(cat <<EOF
-set -euo pipefail
-$(remote_activate_env)
-generate-omero-imports "${BUILD_DATASET}" "${SCREEN_MAPPING_PATH}"
-EOF
-)" || die "Import command generation failed"
-
-  check_remote_file "${REMOTE}" "${IMPORT_COMMANDS_PATH}"
+  check_file "${IMPORT_COMMANDS_PATH}"
   log "Import command generation complete: ${IMPORT_COMMANDS_PATH}"
 
-  run_ssh "${REMOTE}" "python3 - <<'PY'
+  python3 - <<PY
 from pathlib import Path
 import re
 import sys
@@ -252,58 +248,44 @@ manifest.write_text(
 
 print(f'Wrote manifest: {manifest}')
 print(f'Rows: {len(rows)}')
-PY"
+PY
 
-  check_remote_file "${REMOTE}" "${IMPORT_MANIFEST_PATH}"
+  check_file "${IMPORT_MANIFEST_PATH}"
   log "Import manifest generation complete: ${IMPORT_MANIFEST_PATH}"
 }
 
 stage_import() {
   log "Stage: import"
-  check_remote_file "${REMOTE}" "${IMPORT_MANIFEST_PATH}"
+  check_file "${IMPORT_MANIFEST_PATH}"
 
   if [[ "${EXECUTE_IMPORTS}" != "1" ]]; then
     log "EXECUTE_IMPORTS=0, so imports will not be executed automatically."
     log "Generated import manifest is located at: ${IMPORT_MANIFEST_PATH}"
-    log "You can review it with:"
-    echo "ssh ${REMOTE} 'cat \"${IMPORT_MANIFEST_PATH}\"'"
+    log "Review it with:"
+    echo "cat \"${IMPORT_MANIFEST_PATH}\""
     log "Set EXECUTE_IMPORTS=1 in config.sh to execute imports automatically."
     return 0
   fi
 
-  log "EXECUTE_IMPORTS=1, executing imports from manifest on Raccoon"
+  log "EXECUTE_IMPORTS=1, executing imports from manifest"
 
-  run_ssh "${REMOTE}" "$(cat <<EOF
-set -euo pipefail
+  while IFS=$'\t' read -r screen_id plate_path || [[ -n "${screen_id:-}" || -n "${plate_path:-}" ]]; do
+    [[ -z "${screen_id:-}" ]] && continue
+    [[ "${screen_id:0:1}" == "#" ]] && continue
+    [[ -z "${plate_path:-}" ]] && die "Malformed manifest line: missing plate path"
 
-manifest_path="${IMPORT_MANIFEST_PATH}"
+    [[ -d "${plate_path}" ]] || die "Plate path does not exist: ${plate_path}"
 
-if [[ ! -f "\${manifest_path}" ]]; then
-  echo "Missing import manifest: \${manifest_path}" >&2
-  exit 1
-fi
+    echo "[IMPORT] screen_id=${screen_id} plate_path=${plate_path}"
 
-while IFS=$'\t' read -r screen_id plate_path || [[ -n "\${screen_id:-}" || -n "\${plate_path:-}" ]]; do
-  [[ -z "\${screen_id:-}" ]] && continue
-  [[ "\${screen_id:0:1}" == "#" ]] && continue
-  [[ -z "\${plate_path:-}" ]] && { echo "Malformed manifest line: missing plate path" >&2; exit 1; }
+    docker exec -u omero-server "${OMERO_DOCKER_CONTAINER}" \
+      "${OMERO_CLI_PATH}" import \
+      -s localhost \
+      -u "${OMERO_DEFAULT_USER}" \
+      -d "Screen:${screen_id}" \
+      "${plate_path}"
+  done < "${IMPORT_MANIFEST_PATH}"
 
-  if [[ ! -d "\${plate_path}" ]]; then
-    echo "Plate path does not exist: \${plate_path}" >&2
-    exit 1
-  fi
-
-  echo "[IMPORT] screen_id=\${screen_id} plate_path=\${plate_path}"
-
-  docker exec -u omero-server "${OMERO_DOCKER_CONTAINER}" \
-    "${OMERO_CLI_PATH}" import \
-    -s localhost \
-    -u "${OMERO_DEFAULT_USER}" \
-    -d "Screen:\${screen_id}" \
-    "\${plate_path}"
-done < "\${manifest_path}"
-EOF
-)"
   log "Import stage complete"
 }
 
@@ -311,11 +293,11 @@ stage_validate() {
   local mapping_json
   log "Stage: validate"
 
-  check_local_file "${SCREEN_MAPPING_PATH}"
-  check_remote_dir "${REMOTE}" "${RAW_DATASET}"
+  check_file "${SCREEN_MAPPING_PATH}"
+  check_dir "${RAW_DATASET}"
   log "Found raw dataset: ${RAW_DATASET}"
 
-  if run_ssh "${REMOTE}" "test -d \"${BUILD_DATASET}\""; then
+  if [[ -d "${BUILD_DATASET}" ]]; then
     log "Found build dataset: ${BUILD_DATASET}"
   else
     log "Build dataset not yet present: ${BUILD_DATASET}"
@@ -323,13 +305,13 @@ stage_validate() {
 
   mapping_json="$(load_mapping_json)"
 
-  if run_ssh "${REMOTE}" "test -d \"${BUILD_DATASET}\""; then
-    validate_screen_mapping_prefixes "${REMOTE}" "${BUILD_DATASET}" "${mapping_json}"
+  if [[ -d "${BUILD_DATASET}" ]]; then
+    validate_screen_mapping_prefixes "${BUILD_DATASET}" "${mapping_json}"
   else
     log "Skipping screen mapping validation because build dataset is not present"
   fi
 
-  if run_ssh "${REMOTE}" "test -f \"${IMPORT_MANIFEST_PATH}\""; then
+  if [[ -f "${IMPORT_MANIFEST_PATH}" ]]; then
     log "Found import manifest: ${IMPORT_MANIFEST_PATH}"
   else
     log "Import manifest not yet present: ${IMPORT_MANIFEST_PATH}"
@@ -345,9 +327,9 @@ stage_cleanup_local() {
     die "Refusing cleanup. Re-run with CONFIRM_DELETE=YES"
   fi
 
-  check_remote_dir "${REMOTE}" "${BUILD_DATASET}"
+  check_dir "${BUILD_DATASET}"
 
-  run_ssh "${REMOTE}" "python3 - <<'PY'
+  python3 - <<PY
 from pathlib import Path
 from datetime import datetime, timezone
 import sys
@@ -368,13 +350,9 @@ print(f'Retention threshold: {retention_days} days')
 if age_days < retention_days:
     print('Dataset is too recent for cleanup', file=sys.stderr)
     sys.exit(1)
-PY"
+PY
 
-  run_ssh "${REMOTE}" "$(cat <<EOF
-set -euo pipefail
-rm -rf "${BUILD_DATASET}"
-EOF
-)"
+  rm -rf "${BUILD_DATASET}"
   log "Build dataset deleted: ${BUILD_DATASET}"
 }
 

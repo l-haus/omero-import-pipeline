@@ -3,15 +3,9 @@
 # Copy this file to config.sh and edit it for your environment.
 
 # -----------------------------
-# Host / paths
+# Paths
 # -----------------------------
-RACCOON_USER="brownlab"
-RACCOON_HOST="raccoon.csu.mcmaster.ca"
-
-# Raw input datasets
 RAW_ROOT="/media/battlestar/cell_painting/staging"
-
-# Local build/output area on the OMERO host
 BUILD_ROOT="/mnt/data/cell_painting/omero_images"
 
 # -----------------------------
@@ -36,7 +30,7 @@ OMERO_DEFAULT_USER="deisingj"
 # -----------------------------
 # Generate
 # -----------------------------
-GENERATE_WORKERS=16
+GENERATE_WORKERS=60
 
 # -----------------------------
 # Permissions
@@ -54,5 +48,4 @@ EXECUTE_IMPORTS=0
 # -----------------------------
 # Cleanup behavior
 # -----------------------------
-# Minimum dataset age in days before cleanup-local is allowed
 LOCAL_RETENTION_DAYS=7
