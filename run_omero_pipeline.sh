@@ -73,7 +73,7 @@ run_in_microscopy_env() {
   if command -v conda >/dev/null 2>&1; then
     bash -lc "
       set -euo pipefail
-      source ~/.bashrc >/dev/null 2>&1 || true
+      source \"\$(conda info --base)/etc/profile.d/conda.sh\"
       conda activate \"${MICROSCOPY_UTILS_ENV}\"
       ${cmd}
     "
@@ -100,7 +100,7 @@ run_in_microscopy_env() {
     return
   fi
 
-  die "Could not find a working conda initialization path"
+  die "Could not initialize conda for environment: ${MICROSCOPY_UTILS_ENV}"
 }
 
 validate_screen_mapping_prefixes() {
