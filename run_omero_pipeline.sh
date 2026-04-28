@@ -214,6 +214,7 @@ stage_imports() {
   python3 - <<PY
 from pathlib import Path
 import re
+import shlex
 import sys
 
 commands = Path(${IMPORT_COMMANDS_PATH@Q})
@@ -223,19 +224,37 @@ if not commands.exists():
     print(f'Missing commands file: {commands}', file=sys.stderr)
     sys.exit(1)
 
-pattern = re.compile(r'-d\\s+Screen:(\\d+)\\s+(.+)$')
-
 rows = []
+
 for raw in commands.read_text().splitlines():
     raw = raw.strip()
     if not raw:
         continue
-    m = pattern.search(raw)
-    if not m:
-        print(f'Could not parse import command: {raw}', file=sys.stderr)
+
+    parts = shlex.split(raw)
+
+    screen_id = None
+    plate_paths = []
+
+    for i, part in enumerate(parts):
+        if part.startswith("--target=Screen:"):
+            screen_id = part.split(":", 1)[1]
+            continue
+
+        # collect all positional arguments after the target that look like plate paths
+        if screen_id is not None and part.startswith("/"):
+            plate_paths.append(part)
+
+    if screen_id is None:
+        print(f'Could not find screen target in command: {raw}', file=sys.stderr)
         sys.exit(1)
-    screen_id, plate_path = m.groups()
-    rows.append((screen_id, plate_path))
+
+    if not plate_paths:
+        print(f'Could not find any plate paths in command: {raw}', file=sys.stderr)
+        sys.exit(1)
+
+    for plate_path in plate_paths:
+        rows.append((screen_id, plate_path))
 
 if not rows:
     print('No import rows parsed from command file', file=sys.stderr)
