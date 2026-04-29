@@ -299,7 +299,8 @@ stage_import() {
     [[ "${screen_id:0:1}" == "#" ]] && continue
     [[ -z "${plate_path:-}" ]] && die "Malformed manifest line: missing plate path"
 
-    [[ -d "${plate_path}" ]] || die "Plate path does not exist: ${plate_path}"
+    docker exec -u omero-server "${OMERO_DOCKER_CONTAINER}" \
+      test -d "${plate_path}" || die "Plate path does not exist inside container: ${plate_path}"
 
     echo "[IMPORT] screen_id=${screen_id} plate_path=${plate_path}"
 
