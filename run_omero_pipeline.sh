@@ -206,7 +206,13 @@ stage_imports() {
   mapping_json="$(load_mapping_json)"
   validate_screen_mapping_prefixes "${BUILD_DATASET}" "${mapping_json}"
 
-  run_in_microscopy_env "cd \"${BUILD_DATASET}\" && generate-omero-imports \"${BUILD_DATASET}\" \"${SCREEN_MAPPING_PATH}\""
+	IMPORTS_CMD="cd \"${BUILD_DATASET}\" && generate-omero-imports \"${BUILD_DATASET}\" \"${SCREEN_MAPPING_PATH}\" --omero-user \"${OMERO_DEFAULT_USER}\""
+
+	if [[ -n "${SCREEN_ID_OVERRIDE:-}" ]]; then
+		IMPORTS_CMD="${IMPORTS_CMD} --screen-id-override \"${SCREEN_ID_OVERRIDE}\""
+	fi
+
+	run_in_microscopy_env "${IMPORTS_CMD}"
 
   check_file "${IMPORT_COMMANDS_PATH}"
   log "Import command generation complete: ${IMPORT_COMMANDS_PATH}"

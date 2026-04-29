@@ -74,17 +74,22 @@ def emit_omero_import_commands(
     mapping_path: Path,
     omero_user: str,
     container_image_root: str,
+    screen_id_override: int | None = None,
     max_plates: int = 10,
 ) -> List[str]:
     commands = []
     for prefix, plate_list in grouped.items():
-        screen_id = get_or_create_screen_id(prefix, mapping, mapping_path)
+        screen_id = (
+            screen_id_override
+            if screen_id_override is not None
+            else get_or_create_screen_id(prefix, mapping, mapping_path)
+        )
         for i in range(0, len(plate_list), max_plates):
             batch = plate_list[i : i + max_plates]
 
-            # Docker needs mounted paths starting from /omero_images
             batch_mapped = [
-                f"{container_image_root}/{Path(p).parent.name}/{Path(p).name}" for p in batch
+                f"{container_image_root}/{Path(p).parent.name}/{Path(p).name}"
+                for p in batch
             ]
 
             command = (
@@ -94,7 +99,6 @@ def emit_omero_import_commands(
             )
             commands.append(command)
     return commands
-
 
 def main():
     parser = argparse.ArgumentParser(
@@ -117,6 +121,12 @@ def main():
         default="/omero_images",
         help="Path prefix inside the OMERO container for imported images",
     )
+    parser.add_argument(
+    "--screen-id-override",
+    type=int,
+    default=None,
+    help="If set, use this screen ID for all generated import commands",
+    )
     args = parser.parse_args()
 
     base_path = Path(args.input_dir)
@@ -135,6 +145,7 @@ def main():
         mapping_path,
         omero_user=args.omero_user,
         container_image_root=args.container_image_root,
+        screen_id_override=args.screen_id_override,
     )
 
     with open(output_path, "w") as f:
