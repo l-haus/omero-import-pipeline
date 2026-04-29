@@ -292,6 +292,11 @@ stage_import() {
     return 0
   fi
 
+  if [[ -z "${OMERO_PASSWORD:-}" ]]; then
+    read -rsp "OMERO password for ${OMERO_DEFAULT_USER}: " OMERO_PASSWORD
+    echo
+  fi
+
   log "EXECUTE_IMPORTS=1, executing imports from manifest"
 
   while IFS=$'\t' read -r screen_id plate_path || [[ -n "${screen_id:-}" || -n "${plate_path:-}" ]]; do
@@ -308,10 +313,12 @@ stage_import() {
       "${OMERO_CLI_PATH}" import \
       -s localhost \
       -u "${OMERO_DEFAULT_USER}" \
-      -d "Screen:${screen_id}" \
+      -w "${OMERO_PASSWORD}" \
+      --target="Screen:${screen_id}" \
       "${plate_path}"
   done < "${IMPORT_MANIFEST_PATH}"
 
+  unset OMERO_PASSWORD
   log "Import stage complete"
 }
 
