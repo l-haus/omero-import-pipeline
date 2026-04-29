@@ -58,6 +58,21 @@ check_file() {
   [[ -f "${path}" ]] || die "File not found: ${path}"
 }
 
+maybe_prompt_omero_password() {
+  if [[ "${EXECUTE_IMPORTS}" != "1" ]]; then
+    return 0
+  fi
+
+  case "${STAGE}" in
+    import|all)
+      if [[ -z "${OMERO_PASSWORD:-}" ]]; then
+        read -rsp "OMERO password for ${OMERO_DEFAULT_USER}: " OMERO_PASSWORD
+        echo
+      fi
+      ;;
+  esac
+}
+
 load_mapping_json() {
   python3 - <<PY
 from pathlib import Path
@@ -417,6 +432,7 @@ log "Dataset: ${DATASET}"
 log "Stage: ${STAGE}"
 log "Log file: ${LOG_FILE}"
 
+maybe_prompt_omero_password
 run_stage "${STAGE}"
 
 log "Done"
