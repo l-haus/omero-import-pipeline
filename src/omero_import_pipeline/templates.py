@@ -1,0 +1,14 @@
+# Plate layout
+NUM_ROWS = 16
+NUM_COLUMNS = 24
+FIELDS_PER_WELL = 9
+
+# Image properties
+IMAGE_WIDTH = 2048
+IMAGE_HEIGHT = 1536
+PIXEL_TYPE = "uint8"
+DIMENSION_ORDER = "XYZCT"
+SAMPLES_PER_PIXEL = 1
+
+# Channel layout
+DEFAULT_CHANNEL_NAMES = ["DAPI", "GFP", "TX Red", "CY5"]

@@ -13,6 +13,9 @@ dependencies = [
 [project.scripts]
 generate-ome-tiffs = "omero_import_pipeline.generate_ome_tiffs:main"
 generate-ome-tiffs-batch = "omero_import_pipeline.generate_ome_tiffs_batch:main"
+generate-companion = "omero_import_pipeline.generate_companion:main"
+generate-companion-batch = "omero_import_pipeline.generate_companion_batch:main"
+generate-omero-imports = "omero_import_pipeline.generate_omero_imports:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
