@@ -1,8 +1,8 @@
 # Failure Modes
 
-This document lists common operational failure modes in the OMERO import pipeline and how to respond.
+This document describes common failure modes in the current OMERO import pipeline and how to respond.
 
-The point is not to eliminate every possible failure. The point is to make failures visible and recoverable.
+The goal is not to make failures impossible. The goal is to make them understandable and recoverable.
 
 ## 1. Raw dataset path does not exist
 
@@ -13,307 +13,350 @@ Symptoms:
 Likely causes:
 - wrong dataset name
 - wrong `RAW_ROOT`
-- raw data not mounted or not present yet
+- raw storage not mounted or not available
 
 What to do:
 1. verify the dataset name
-2. check `RAW_ROOT` in `config.sh`
-3. verify the raw dataset path directly on the OMERO host
+2. verify `RAW_ROOT` in `config.sh`
+3. check the path directly on the OMERO host
 4. rerun `validate`
 
-## 2. OME-TIFF generation fails partway through
+## 2. OME-TIFF generation fails or stops partway through
 
 Symptoms:
 - `generate` exits non-zero
-- build directory exists but content is incomplete
+- partial output exists under the build dataset
 - logs show tool or environment errors
 
 Likely causes:
-- bad input data
+- broken raw input
 - storage exhaustion
-- environment activation failure
-- tool crash
+- missing Python package dependency
+- conda environment activation failure
 
 What to do:
 1. inspect the log file under `logs/<dataset>/`
-2. inspect the build directory directly
-3. fix the underlying issue
+2. inspect the build dataset directly
+3. fix the underlying problem
 4. rerun `generate`
 5. rerun `validate-local`
 
-What not to do:
-- do not assume partial output is valid
-- do not continue directly to `companion`
+Do not continue downstream on partial output unless you have confirmed it is complete.
 
 ## 3. `validate-local` fails because no plate directories were found
 
 Symptoms:
-- build directory exists
-- validation says no plate directories are present
+- build dataset exists
+- validation reports no plate directories
 
 Likely causes:
-- generator wrote to an unexpected layout
-- wrong build root
-- generation failed earlier than expected
+- generator wrote to a different layout than expected
+- output root is wrong
+- generation failed before plate-level output was created
 
 What to do:
-1. inspect the directory layout manually
-2. confirm how `generate-ome-tiffs-batch` writes output
-3. adjust the validation logic if the layout is valid but different
-4. otherwise fix generation and rerun
+1. inspect the build dataset manually
+2. confirm the expected directory layout
+3. fix the root cause
+4. rerun `generate`
 
-## 4. `validate-local` fails because no OME-TIFF files were found
+## 4. `validate-local` fails because no OME-TIFFs were found
 
 Symptoms:
 - plate directories exist
-- no `.ome.tif` or `.ome.tiff` files are found
+- validation reports no `.ome.tif` or `.ome.tiff` files
 
 Likely causes:
 - generation did not complete
-- generator produced a different filename pattern
-- validation assumptions are wrong
+- naming pattern differs from validation assumptions
+- output path is wrong
 
 What to do:
 1. inspect actual filenames with `find`
-2. confirm expected output naming from the generator
-3. fix validation if the output is correct but named differently
-4. otherwise rerun generation after fixing the root issue
+2. confirm generator output naming
+3. update validation if naming is valid but different
+4. rerun generation if output is actually incomplete
 
-## 5. Companion generation fails
+## 5. Companion generation command not found
 
 Symptoms:
-- `companion` exits non-zero
-- build dataset exists but companion files are missing
+- `companion` fails with `command not found`
 
 Likely causes:
-- missing environment or tool
-- malformed generated dataset
-- incompatible input structure
+- repo package is not installed in the active environment
+- editable install points somewhere unexpected
+- the active shell is using the wrong environment
 
 What to do:
-1. inspect logs
-2. verify the conda environment on the host
-3. run the companion command manually once if needed
-4. fix the issue
-5. rerun `companion`
+1. activate the intended environment
+2. run `which generate-companion-batch`
+3. run `python -c "import omero_import_pipeline.generate_companion_batch as m; print(m.__file__)"`
+4. reinstall the repo with `pip install -e .`
 
-Do not continue to import setup if companion generation is required and missing.
+## 6. Companion generation fails on specific plates
 
-## 6. Permissions stage fails
+Symptoms:
+- `companion` starts but prints errors for one or more plate directories
+
+Likely causes:
+- a plate directory contains no `.ome.tiff` files
+- a plate has an unexpected file layout
+- OME metadata generation logic hit bad inputs
+
+What to do:
+1. inspect the specific plate directory
+2. verify that `.ome.tiff` files exist
+3. rerun the stage after fixing the plate contents
+
+## 7. Permissions stage fails
 
 Symptoms:
 - `permissions` exits non-zero
-- logs show `sudo` or permission errors
+- logs show `sudo` or ownership errors
 
 Likely causes:
-- insufficient privileges
-- wrong owner/group settings in config
-- filesystem permission policy
+- insufficient privilege
+- wrong `RACCOON_CHOWN_USER` or `RACCOON_CHOWN_GROUP`
+- filesystem policy conflict
 
 What to do:
-1. verify `RACCOON_CHOWN_USER` and `RACCOON_CHOWN_GROUP`
+1. verify config values
 2. verify that the operator can use `sudo`
-3. test the ownership command manually on one path
+3. test the relevant chown/chmod command manually on one path
 4. rerun `permissions`
 
-If your environment does not need this stage, remove or simplify it rather than keeping a fake step that always fails.
+If this stage is not needed in your environment, simplify it rather than keeping a failing step.
 
-## 7. Missing screen mapping prefixes
+## 8. Missing screen mapping prefixes
 
 Symptoms:
 - `imports` fails during prefix validation
-- error lists one or more missing prefixes
+- error lists prefixes missing from `screen_mapping.json`
 
 Likely causes:
-- new plate prefix not yet added to `screen_mapping.json`
-- typo in directory naming
-- wrong dataset contents
+- new prefix not yet added to mapping
+- typo in plate directory names
+- dataset contents not what you expected
 
 What to do:
 1. inspect the listed prefixes
-2. confirm whether they are real plate prefixes
+2. confirm they are real
 3. update `screen_mapping.json` if needed
 4. rerun `imports`
 
-This is a hard failure by design.
+This is an intentional hard failure.
 
-## 8. `generate-omero-imports` fails
+## 9. Wrong OMERO user appears in generated import commands
 
 Symptoms:
-- `imports` exits non-zero before manifest generation
-- command file is missing
+- `omero_import_commands.txt` shows the wrong `-u <user>` value
 
 Likely causes:
-- tool is unavailable
-- mapping file path cannot be read by the tool
-- dataset structure is incompatible
-- the tool itself failed
+- generator is still using a stale hardcoded user
+- `run_omero_pipeline.sh` is not passing the configured OMERO user
+- the installed CLI is coming from an old repo/version
 
 What to do:
-1. verify the tool is installed and on `PATH`
-2. verify that `screen_mapping.json` exists at the repo path
-3. run the command manually once for debugging
-4. fix the issue
-5. rerun `imports`
+1. check `OMERO_DEFAULT_USER` in `config.sh`
+2. run `which generate-omero-imports`
+3. confirm the installed command comes from this repo
+4. rerun `imports`
 
-## 9. Import command parsing fails
+## 10. Wrong screen ID appears in generated imports
 
 Symptoms:
-- `imports` generates a command file but fails when creating the TSV manifest
-- error says a command line could not be parsed
+- generated command file or manifest uses the wrong `screen_id`
 
 Likely causes:
-- output format of `generate-omero-imports` changed
-- parser regex is too strict
-- command file contains unexpected content
+- `screen_mapping.json` points to the wrong screen
+- the target screen differs for the current OMERO user
+- screen override was not provided when needed
+
+What to do:
+1. verify the desired target screen in OMERO
+2. inspect `screen_mapping.json`
+3. use `SCREEN_ID_OVERRIDE=<id>` when needed
+4. rerun `imports`
+
+## 11. Generated commands file lands in the wrong directory
+
+Symptoms:
+- `imports` claims command generation succeeded but the file is not found where expected
+
+Likely causes:
+- generator writes to the current working directory
+- pipeline did not `cd` into the dataset directory first
+
+What to do:
+1. look in the repo root or current shell directory for the generated file
+2. confirm the pipeline runs the generator from inside the dataset directory
+3. rerun `imports`
+
+## 12. Import command parsing fails
+
+Symptoms:
+- `imports` fails while converting `omero_import_commands.txt` into the manifest
+
+Likely causes:
+- generator output format changed
+- parser assumed one path per line but commands now group multiple plate paths
+- target syntax changed from one form to another
 
 What to do:
 1. inspect `omero_import_commands.txt`
-2. compare its format to what the parser expects
-3. update the regex parser if needed
+2. compare it to the parser expectations
+3. update the parser to match the actual grouped command format
 4. rerun `imports`
 
-This is one of the current weak points of the pipeline.
-
-## 10. Import manifest is missing
+## 13. Manifest paths do not exist on the host
 
 Symptoms:
-- `import` fails because `omero_import_manifest.tsv` does not exist
+- `import` reports that manifest plate paths do not exist
+- paths look like `/omero_images/...`
 
 Likely causes:
-- `imports` did not run
-- `imports` failed after command generation
-- manifest path configuration is wrong
+- manifest paths are container-visible paths, not host paths
+- import stage is validating them on the host instead of inside the container
 
 What to do:
-1. rerun `imports`
-2. inspect the build dataset directory
-3. verify config values for generated filenames
+1. confirm whether the manifest uses container paths
+2. validate paths inside the OMERO container, not on the host
+3. rerun `import`
 
-## 11. OMERO import fails partway through
+This was a real failure mode during development.
+
+## 14. `stdin is not a terminal: cannot request password`
 
 Symptoms:
-- `import` starts but stops after some plates
-- some data may already be in OMERO
+- `import` starts, then OMERO fails trying to prompt for a password
 
 Likely causes:
-- authentication or session issue
-- malformed import manifest
-- individual plate import failure
-- OMERO-side service problem
+- OMERO CLI is running in a non-interactive context
+- no password was supplied at runtime
 
 What to do:
-1. inspect the log output
-2. determine which plate failed
-3. inspect that plate directory
-4. fix the specific issue
-5. rerun `import`
+1. make sure the shell pipeline prompts once before import execution
+2. pass the password explicitly at runtime to the OMERO CLI
+3. rerun `import`
 
-Important:
-- do not immediately delete local build output
-- partial import completion is a normal reason to keep local data around
+The current pipeline handles this by prompting once and reusing the password during the import loop.
 
-## 12. Import does not execute because `EXECUTE_IMPORTS=0`
+## 15. Import review mode seems to do nothing
 
 Symptoms:
-- `import` appears to stop after reporting the manifest path
+- `import` only tells you where the manifest is and exits
 
 Cause:
-- this is expected behavior
+- `EXECUTE_IMPORTS=0`
 
 What to do:
-1. inspect the manifest
+1. review the manifest
 2. if ready, set `EXECUTE_IMPORTS=1`
 3. rerun `import`
 
-This is a safety feature, not a bug.
+This is intentional behavior.
 
-## 13. Cleanup is refused
+## 16. Import fails inside OMERO after authentication succeeds
 
 Symptoms:
-- `cleanup-local` exits with a confirmation or retention error
+- import starts and authenticates, but one or more plates fail
 
 Likely causes:
-- `CONFIRM_DELETE=YES` was not set
-- dataset is younger than `LOCAL_RETENTION_DAYS`
+- malformed companion metadata
+- problematic plate directory contents
+- wrong target screen
+- OMERO-side server issue
 
 What to do:
-1. verify you really want to delete the dataset
-2. rerun with explicit confirmation:
-   `CONFIRM_DELETE=YES ./run_omero_pipeline.sh DATASET cleanup-local`
-3. if retention is blocking you intentionally, either wait or reduce the threshold in config
+1. inspect the import log carefully
+2. identify the failing plate path
+3. inspect that plate directory directly
+4. verify the target screen and user
+5. rerun once the specific issue is fixed
 
-This refusal is intentional.
+Do not run cleanup before understanding the failure.
 
-## 14. Cleanup deletes data that was still needed
+## 17. Cleanup is refused
 
 Symptoms:
-- you need to inspect or re-import a dataset, but the build output is gone
+- `cleanup-local` exits with a confirmation or retention message
+
+Likely causes:
+- `CONFIRM_DELETE=YES` not set
+- dataset age is below `LOCAL_RETENTION_DAYS`
+
+What to do:
+1. confirm you really want to delete the build dataset
+2. rerun with explicit confirmation
+3. adjust retention only if you intentionally want more aggressive cleanup
+
+The refusal is deliberate.
+
+## 18. Cleanup removes data you still needed
+
+Symptoms:
+- you need to inspect or re-import plates, but the build dataset is gone
 
 Root cause:
-- cleanup was run too early
+- cleanup ran too early
 
 What to do:
-1. regenerate the dataset if necessary
-2. tighten your cleanup practice
+1. regenerate the dataset if needed
+2. delay cleanup in future
 3. consider increasing `LOCAL_RETENTION_DAYS`
 
-Prevention:
-- do not treat cleanup as part of the normal pipeline
-- do not run cleanup on the same day as first import unless you are very sure
+This is why cleanup is not part of `all`.
 
-## 15. Script cannot find `screen_mapping.json`
+## 19. Wrong command version is being used
 
 Symptoms:
-- `imports` or `validate` fails before remote work starts
-- error says the local mapping file is missing
+- stage behavior does not match the current repo code
+- generated outputs still reflect old hardcoded values
 
 Likely causes:
-- repo asset not present
-- wrong file name in config
-- script run from an unexpected checkout
+- the shell resolves an older installed package
+- editable install is stale
+- environment is not the one you think it is
 
 What to do:
-1. verify that `screen_mapping.json` exists in the repo root
-2. verify `SCREEN_MAPPING_FILE` in `config.sh`
-3. rerun from the intended checked-out repo
+1. run `which generate-ome-tiffs-batch`
+2. run `which generate-companion-batch`
+3. run `which generate-omero-imports`
+4. verify the Python module path with `python -c ... print(__file__)`
+5. reinstall the repo in editable mode if needed
 
-## 16. Config drift causes wrong paths or wrong ownership
+## 20. Config drift causes unexpected behavior
 
 Symptoms:
-- stages fail unexpectedly
-- output lands in the wrong directory
-- ownership commands target the wrong paths
+- paths, users, screen IDs, or container settings do not match expectations
 
 Likely causes:
 - stale `config.sh`
-- copied config from another machine
-- local edits not reflected in docs
+- copied config from another machine or user
+- README and code evolved but local config did not
 
 What to do:
 1. compare `config.sh` to `config.example.sh`
-2. verify all path settings directly on the OMERO host
-3. verify owner/group values before rerunning `permissions`
+2. verify the active OMERO user, screen override, and build root
+3. rerun the affected stage only after fixing config
 
 ## Operational guidance
 
-When something fails:
-
-1. stop advancing to later stages
-2. inspect the most recent log file
-3. inspect the dataset directory directly
+When a stage fails:
+1. stop
+2. inspect the latest log file
+3. inspect the relevant generated files and dataset directory
 4. fix the root cause
 5. rerun the failed stage
 6. rerun `validate`
 
-Do not try to “push through” a broken earlier stage by continuing to later ones. That is how messy state accumulates.
+Do not try to force later stages through a broken earlier state.
 
-## Longer-term hardening ideas
+## Recommended future hardening
 
-These are not required immediately, but they are the logical next improvements:
-
-- make `generate-omero-imports` emit TSV directly
-- add a status marker file per dataset
-- make validation more specific to expected plate counts
-- record publish/import timestamps explicitly instead of relying on directory mtime
-- improve OMERO authentication/session handling without embedding passwords in files
+The next useful improvements would be:
+- add a `preflight` stage
+- verify OMERO container visibility of the image root
+- validate required CLI commands before a run starts
+- add a more explicit dataset state marker file
+- improve auth/session handling if passwordless flows become available

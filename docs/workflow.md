@@ -2,246 +2,259 @@
 
 ## Overview
 
-This workflow imports Cell Painting datasets into OMERO using a single-host pipeline on the OMERO host.
+This document describes the current OMERO import workflow implemented by this repo.
 
-The pipeline is structured as staged execution rather than a long sequence of copy-pasted commands.
+The workflow is now:
+- single-host
+- stage-based
+- driven from the OMERO host
+- backed by helper CLIs vendored into this repo
 
-The goals are:
+The main purpose is to turn a raw Cell Painting dataset into imported OMERO plates with predictable intermediate artifacts and review points.
 
-- reduce operator mistakes
-- make reruns easier
-- keep generated artifacts in predictable places
-- separate normal processing from destructive cleanup
+## Execution model
 
-## High-level flow
+The pipeline runs on the OMERO host.
 
-For a dataset `DATASET`, the pipeline does:
+It uses:
+- host-visible raw input paths
+- host-visible build/output paths
+- container-visible image paths during the actual OMERO import step
 
-1. generate OME-TIFFs from raw input
-2. validate that generated output exists and looks plausible
-3. generate companion metadata
-4. fix permissions
-5. validate plate prefixes against `screen_mapping.json`
-6. generate OMERO import commands
-7. convert the commands to a structured TSV manifest
-8. optionally execute the OMERO imports
-9. keep local build output until explicitly cleaned up
+That distinction matters:
+- generation and companion writing run on host paths
+- import execution runs inside the OMERO container
+- manifest paths therefore use container path semantics
 
-## Directory model
+## High-level stage flow
+
+For a dataset `DATASET`, the normal flow is:
+
+1. `generate`
+2. `validate-local`
+3. `companion`
+4. `permissions`
+5. `imports`
+6. `import`
+
+The `all` stage runs this same sequence.
+
+`cleanup-local` is intentionally separate and not included in `all`.
+
+## Paths and artifacts
 
 ### Raw input
 
-Raw input is expected at:
+Expected at:
 
 ```text
 RAW_ROOT/DATASET
 ```
 
-### Build output
+### Build dataset
 
-Generated OME-TIFFs and related artifacts are written to:
+Generated output lives at:
 
 ```text
 BUILD_ROOT/DATASET
 ```
 
+This dataset directory becomes the main working location for:
+- OME-TIFF files
+- companion files
+- generated import command file
+- generated import manifest
+
 ### Repo asset
 
-The plate prefix mapping is stored in the repo as:
+The screen mapping file lives in the repo root:
 
 ```text
 screen_mapping.json
 ```
 
-### Generated import artifacts
-
-Generated files live inside the dataset build directory:
-
-```text
-BUILD_ROOT/DATASET/omero_import_commands.txt
-BUILD_ROOT/DATASET/omero_import_manifest.tsv
-```
+The shell pipeline resolves it relative to the script directory.
 
 ## Stage details
 
 ## `generate`
 
 Purpose:
-- create OME-TIFFs for the dataset
+- generate OME-TIFFs from raw TIFF inputs
 
 Input:
 - `RAW_ROOT/DATASET`
 
 Output:
-- `BUILD_ROOT/DATASET`
+- `BUILD_ROOT/DATASET/<plate>/...*.ome.tiff`
 
-Expected behavior:
-- fails if the raw dataset path does not exist
-- creates the build directory if needed
-- runs `generate-ome-tiffs-batch`
+Implementation notes:
+- uses `generate-ome-tiffs-batch`
+- helper code is vendored into this repo under `src/omero_import_pipeline/`
+- runs in the configured conda environment
 
-Typical command:
-
-```bash
-./run_omero_pipeline.sh DATASET generate
-```
+Failure should stop the workflow here.
 
 ## `validate-local`
 
 Purpose:
-- sanity-check generated output before downstream stages
+- basic operational sanity check after generation
 
 Checks:
-- build dataset directory exists
+- build dataset exists
 - at least one plate directory exists
-- at least one `.ome.tif` or `.ome.tiff` file exists
+- at least one `.ome.tif` or `.ome.tiff` exists
 
-Typical command:
-
-```bash
-./run_omero_pipeline.sh DATASET validate-local
-```
-
-This is not a full data validation framework. It is a basic operational sanity check.
+This is not a complete scientific validation layer. It is a workflow safety check.
 
 ## `companion`
 
 Purpose:
-- generate companion metadata for the built dataset
+- create `.companion.ome` files for each plate directory
 
 Input:
-- `BUILD_ROOT/DATASET`
+- plate directories under `BUILD_ROOT/DATASET`
 
-Expected behavior:
-- runs `generate-companion-batch`
-- fails if build output is missing
-
-Typical command:
-
-```bash
-./run_omero_pipeline.sh DATASET companion
-```
+Implementation notes:
+- uses `generate-companion-batch`
+- companion files are written into each plate directory
+- the helper code is vendored into this repo
 
 ## `permissions`
 
 Purpose:
-- normalize ownership and permissions for OMERO-side access
+- normalize ownership and readability for OMERO access
 
 Input:
 - `BUILD_ROOT/DATASET`
 
-Expected behavior:
-- changes ownership to the configured user and group
+Behavior:
+- recursively chowns the dataset to the configured user/group
 - makes files world-readable
 - makes directories world-readable and executable
 
-Typical command:
-
-```bash
-./run_omero_pipeline.sh DATASET permissions
-```
-
-This stage may require `sudo` rights depending on the environment.
+This stage may require `sudo`.
 
 ## `imports`
 
 Purpose:
-- validate screen mappings and generate import artifacts
+- validate screen routing and generate import artifacts
 
-Input:
+Inputs:
 - `BUILD_ROOT/DATASET`
 - `screen_mapping.json`
+- configured OMERO user
+- optional `SCREEN_ID_OVERRIDE`
 
-Output:
-- `omero_import_commands.txt`
-- `omero_import_manifest.tsv`
+Outputs:
+- `BUILD_ROOT/DATASET/omero_import_commands.txt`
+- `BUILD_ROOT/DATASET/omero_import_manifest.tsv`
 
-What happens:
-1. the script loads `screen_mapping.json`
-2. the script checks all plate prefixes found in the dataset
-3. if any prefix is missing from the mapping, the stage fails
-4. the script runs `generate-omero-imports`
-5. the generated command file is parsed into a TSV manifest
+### What happens inside `imports`
 
-Manifest format:
+1. the pipeline validates plate prefixes against `screen_mapping.json`
+2. the helper CLI generates grouped OMERO import commands
+3. those grouped commands are expanded into a TSV manifest
+4. the manifest contains one row per plate path
+
+### OMERO user behavior
+
+Generated commands use the configured OMERO user, for example:
 
 ```text
-# screen_id    plate_path
-103    /path/to/plate1
-60     /path/to/plate2
+-u luettria
 ```
 
-Typical command:
+This keeps the generated commands aligned with runtime import behavior.
 
-```bash
-./run_omero_pipeline.sh DATASET imports
-```
+### Screen override behavior
+
+By default, screen IDs come from `screen_mapping.json`.
+
+If `SCREEN_ID_OVERRIDE` is set, the generated import commands and manifest use that screen ID instead of the mapped one.
+
+This is useful when screen IDs are effectively user-context dependent or when a one-off target screen is needed.
 
 ## `import`
 
 Purpose:
-- import the dataset into OMERO from the TSV manifest
+- execute the OMERO imports from the manifest
 
 Input:
 - `BUILD_ROOT/DATASET/omero_import_manifest.tsv`
 
-Behavior:
-- if `EXECUTE_IMPORTS=0`, the stage stops after telling you where the manifest is
-- if `EXECUTE_IMPORTS=1`, the stage loops through the manifest and runs OMERO import commands
+### Manifest format
 
-Typical command:
-
-```bash
-./run_omero_pipeline.sh DATASET import
+```text
+# screen_id    plate_path
+401    /omero_images/run_2026-03-19/KCII_...
 ```
 
-Default recommendation:
-- keep `EXECUTE_IMPORTS=0` until you trust the workflow for your environment
+Important:
+- `plate_path` is a **container-visible path**
+- the pipeline validates these paths **inside the OMERO container**
+
+### Review-first mode
+
+When:
+
+```bash
+EXECUTE_IMPORTS=0
+```
+
+The stage does not execute imports. It only points you at the manifest.
+
+### Execution mode
+
+When:
+
+```bash
+EXECUTE_IMPORTS=1
+```
+
+The stage:
+- prompts once for the OMERO password if needed
+- validates each plate path inside the container
+- runs OMERO import commands from the manifest rows
+
+### Authentication behavior
+
+The password is collected once and reused across the import loop.
+
+It is not written to:
+- the manifest
+- the generated command file
+- config files
 
 ## `validate`
 
 Purpose:
-- inspect current pipeline state for a dataset
+- inspect the current dataset state and configuration alignment
 
 Checks:
-- raw dataset path exists
-- build dataset path exists or is reported as missing
-- `screen_mapping.json` is present
-- screen prefix validation runs if build output exists
-- import manifest existence is reported
+- raw dataset exists
+- build dataset exists or is reported missing
+- `screen_mapping.json` exists
+- prefix validation succeeds when build output exists
+- manifest existence is reported
 
-Typical command:
-
-```bash
-./run_omero_pipeline.sh DATASET validate
-```
-
-This is useful before imports and after partial failures.
+This is useful both before import and after partial failures.
 
 ## `cleanup-local`
 
 Purpose:
 - delete local build output after explicit confirmation
 
-Input:
-- `BUILD_ROOT/DATASET`
-
-Guardrails:
+Guards:
 - requires `CONFIRM_DELETE=YES`
 - requires dataset age to be at least `LOCAL_RETENTION_DAYS`
 
-Typical command:
-
-```bash
-CONFIRM_DELETE=YES ./run_omero_pipeline.sh DATASET cleanup-local
-```
-
-This stage is intentionally not part of `all`.
+This stage is intentionally separate from `all`.
 
 ## `all`
 
 Purpose:
-- run the standard non-destructive pipeline sequence
+- run the standard pipeline sequence in one command
 
 Sequence:
 1. `generate`
@@ -251,15 +264,39 @@ Sequence:
 5. `imports`
 6. `import`
 
-Typical command:
+When `EXECUTE_IMPORTS=1`, the script prompts for the OMERO password near the start of `all` so the long run does not wait until the very end for authentication.
 
-```bash
-./run_omero_pipeline.sh DATASET all
+## Host paths vs container paths
+
+This is one of the most important operational details.
+
+### Host path examples
+
+Used by generation and metadata-writing stages:
+
+```text
+/mnt/data/cell_painting/omero_images/run_2026-03-19
 ```
 
-Keep in mind:
-- `import` still obeys `EXECUTE_IMPORTS`
-- `cleanup-local` is not included
+### Container path examples
+
+Used by import commands and manifest rows:
+
+```text
+/omero_images/run_2026-03-19/KCII_...
+```
+
+If these are confused, imports will fail even when the dataset exists.
+
+## Generated command grouping
+
+The generated OMERO command file may group multiple plate paths into a single OMERO import command.
+
+The manifest expands those grouped commands into one row per plate.
+
+This design keeps:
+- the command file useful for human review
+- the manifest simple for deterministic pipeline execution
 
 ## Recommended operator workflow
 
@@ -272,44 +309,35 @@ For a new dataset:
 ./run_omero_pipeline.sh DATASET permissions
 ./run_omero_pipeline.sh DATASET imports
 ./run_omero_pipeline.sh DATASET validate
+./run_omero_pipeline.sh DATASET import
 ```
 
-Then inspect:
-- logs
-- generated manifest
-- expected plate coverage
+For a confident repeat run:
 
-Then either:
-- run `import` manually
-- or enable `EXECUTE_IMPORTS=1` and rerun `import`
+```bash
+./run_omero_pipeline.sh DATASET all
+```
 
-## Screen mapping policy
+## Why the workflow is staged
 
-`screen_mapping.json` is a required asset for the pipeline.
+This workflow intentionally keeps explicit stage boundaries because they help with:
+- debugging
+- reviewability
+- reruns after partial failure
+- avoiding premature cleanup
+- avoiding hidden operator state
 
-The workflow assumes:
-- each plate directory name begins with a 4-character prefix
-- that prefix maps to an OMERO screen ID
-- missing mappings are treated as hard failures during `imports`
+## Current design tradeoffs
 
-This is intentional. Silent fallback behavior would be risky.
+The current design is deliberately practical rather than over-abstracted.
 
-## Cleanup policy
+It favors:
+- one repo
+- one host
+- vendored helper tooling
+- shell orchestration plus small Python CLIs
 
-Local build output is temporary but should not be deleted automatically at the end of the main pipeline.
-
-Why:
-- imports may partially fail
-- you may need to rerun import logic
-- you may need to inspect generated artifacts
-- immediate deletion makes recovery harder
-
-The cleanup stage is separate on purpose.
-
-## Notes on generated artifacts
-
-The command file exists mainly because it is what the current tool produces.
-
-The TSV manifest exists because it is a safer structured representation for import execution.
-
-Longer-term, the cleaner design would be to make `generate-omero-imports` emit TSV directly.
+It does not yet include:
+- a preflight stage
+- session-based OMERO auth
+- richer state tracking beyond logs and generated artifacts
